@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Blackjack AI Task (Paste-back)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 20px; }
+    .wrap { max-width: 900px; margin: 0 auto; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 14px; margin: 12px 0; }
+    input, button, textarea, select { font-size: 16px; }
+    textarea { width: 100%; height: 180px; }
+    .muted { color: #555; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    .row > * { flex: 1 1 auto; }
+    .big { font-size: 18px; }
+    code { background: #f6f6f6; padding: 2px 6px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Blackjack AI Task</h1>
+  <p class="muted">This task does not upload data anywhere. At the end you will copy a data package back into Experimentum.</p>
+
+  <div id="screen"></div>
+</div>
+
+<script>
+/* -------------------------
+   Utilities
+------------------------- */
+function qs(name){
+  const u = new URL(window.location.href);
+  return u.searchParams.get(name);
+}
+function xmur3(str) {
+  let h = 1779033703 ^ str.length;
+  for (let i = 0; i < str.length; i++) {
+    h = Math.imul(h ^ str.charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  return function() {
+    h = Math.imul(h ^ (h >>> 16), 2246822507);
+    h = Math.imul(h ^ (h >>> 13), 3266489909);
+    return (h ^= h >>> 16) >>> 0;
+  };
+}
+function mulberry32(a) {
+  return function() {
+    let t = a += 0x6D2B79F5;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function makeRng(seedStr){
+  const seedFn = xmur3(seedStr);
+  return mulberry32(seedFn());
+}
+function b64encode(str){
+  return btoa(unescape(encodeURIComponent(str)));
+}
+function b64decode(b64){
+  return decodeURIComponent(escape(atob(b64)));
+}
+function completionCodeFrom(id){
+  let h = 0;
+  for (let i=0; i<id.length; i++) h = (h*31 + id.charCodeAt(i)) >>> 0;
+  return "UofG-" + (h.toString(16).toUpperCase()).slice(0,8);
+}
+
+/* -------------------------
+   Blackjack (simplified)
+------------------------- */
+const SUITS = ["S","H","D","C"];
+const RANKS = ["A","2","3","4","5","6","7","8","9","10","J","Q","K"];
+const RANK_VALUE = {A:11,"2":2,"3":3,"4":4,"5":5,"6":6,"7":7,"8":8,"9":9,"10":10,J:10,Q:10,K:10};
+
+function makeShoe(decks=4){
+  const shoe = [];
+  for (let d=0; d<decks; d++){
+    for (const s of SUITS){
+      for (const r of RANKS){
+        shoe.push({r,s});
+      }
+    }
+  }
+  return shoe;
+}
+function shuffle(arr, rng){
+  for (let i=arr.length-1;i>0;i--){
+    const j = Math.floor(rng()* (i+1));
+    [arr[i],arr[j]] = [arr[j],arr[i]];
+  }
+  return arr;
+}
+function cardStr(c){ return `${c.r}${c.s}`; }
+function handStr(h){ return h.map(cardStr).join(" "); }
+
+function handTotal(hand){
+  let total = 0, aces = 0;
+  for (const c of hand){
+    total += RANK_VALUE[c.r];
+    if (c.r === "A") aces++;
+  }
+  while (total > 21 && aces > 0){
+    total -= 10;
+    aces--;
+  }
+  return total;
+}
+function isBlackjack(hand){ return hand.length===2 && handTotal(hand)===21; }
+
+function dealerPlay(dealer, shoe){
+  while (handTotal(dealer) < 17){
+    dealer.push(shoe.pop());
+  }
+  return dealer;
+}
+function resolveOutcome(player, dealer, bet){
+  const pBJ = isBlackjack(player), dBJ = isBlackjack(dealer);
+  if (pBJ && !dBJ) return { outcome:"PLAYER_BLACKJACK", delta: Math.round(1.5*bet) };
+  if (dBJ && !pBJ) return { outcome:"DEALER_BLACKJACK", delta: -bet };
+
+  const p = handTotal(player), d = handTotal(dealer);
+  if (p > 21) return { outcome:"PLAYER_BUST", delta:-bet };
+  if (d > 21) return { outcome:"DEALER_BUST", delta: bet };
+  if (p > d) return { outcome:"PLAYER_WIN", delta: bet };
+  if (p < d) return { outcome:"DEALER_WIN", delta:-bet };
+  return { outcome:"PUSH", delta:0 };
+}
+
+/* -------------------------
+   AI (safe vs risky)
+------------------------- */
+function dealerUpValue(rank){ return rank==="A" ? 11 : RANK_VALUE[rank]; }
+
+function basicStrategy(player, dealerUpRank){
+  const total = handTotal(player);
+  const dealerVal = dealerUpValue(dealerUpRank);
+  const twoCards = (player.length===2);
+  const hasAce = player.some(c=>c.r==="A");
+  const rawTotal = player.reduce((a,c)=>a+RANK_VALUE[c.r],0);
+  const soft = hasAce && rawTotal === total;
+
+  if (!soft){
+    if (total <= 8) return "Hit";
+    if (total === 9)  return (twoCards && dealerVal>=3 && dealerVal<=6) ? "Double" : "Hit";
+    if (total === 10) return (twoCards && dealerVal<=9) ? "Double" : "Hit";
+    if (total === 11) return twoCards ? "Double" : "Hit";
+    if (total === 12) return (dealerVal>=4 && dealerVal<=6) ? "Stand" : "Hit";
+    if (total >= 13 && total <= 16) return (dealerVal>=2 && dealerVal<=6) ? "Stand" : "Hit";
+    return "Stand";
+  } else {
+    if (total <= 17) return "Hit";
+    if (total === 18) return (twoCards && dealerVal>=3 && dealerVal<=6) ? "Double" : (dealerVal===2||dealerVal===7||dealerVal===8 ? "Stand" : "Hit");
+    return "Stand";
+  }
+}
+function riskyDeviation(player, dealerUpRank, baseAction, rng){
+  const total = handTotal(player);
+  const dealerVal = dealerUpValue(dealerUpRank);
+  const hasAce = player.some(c=>c.r==="A");
+  const rawTotal = player.reduce((a,c)=>a+RANK_VALUE[c.r],0);
+  const soft = hasAce && rawTotal === total;
+  const twoCards = (player.length===2);
+
+  if (baseAction === "Hit") return "Hit";
+  if (!soft && total>=12 && total<=16 && dealerVal>=2 && dealerVal<=6){
+    if (rng() < 0.35) return "Hit";
+  }
+  if (twoCards && baseAction !== "Double"){
+    if (!soft && total===9 && dealerVal===2 && rng() < 0.35) return "Double";
+    if (!soft && total===8 && dealerVal>=5 && dealerVal<=6 && rng() < 0.25) return "Double";
+  }
+  return baseAction;
+}
+function aiBet(bankroll, aiType, rng){
+  if (bankroll<=0) return 0;
+  const frac = (aiType==="SAFE") ? (0.05 + rng()*0.10) : (0.30 + rng()*0.20);
+  return Math.max(1, Math.min(bankroll, Math.round(bankroll*frac)));
+}
+
+/* -------------------------
+   Experiment state
+------------------------- */
+const START_BANKROLL = 100;
+const ROUNDS_PER_BLOCK = 20;
+
+let state = {
+  pid: null,
+  rng: null,
+  shoe: null,
+  bankroll: START_BANKROLL,
+  order: ["SAFE","RISKY"],
+  block: 0,
+  round: 0,
+  logs: [],
+  trust: []
+};
+
+function counterbalance(pid){
+  const digits = (pid.match(/\d/g) || []);
+  if (digits.length){
+    return (parseInt(digits[digits.length-1],10) % 2 === 0) ? ["SAFE","RISKY"] : ["RISKY","SAFE"];
+  }
+  return ["SAFE","RISKY"];
+}
+
+function render(html){
+  document.getElementById("screen").innerHTML = html;
+}
+function escapeHtml(s){
+  return (s||"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;");
+}
+
+/* -------------------------
+   Screens
+------------------------- */
+function screenStart(){
+  const urlPid = qs("id") || "";
+  render(`
+    <div class="card">
+      <p class="big"><strong>Participant Code</strong></p>
+      <p class="muted">Enter the same participant code you used on Experimentum.</p>
+      <div class="row">
+        <input id="pid" value="${escapeHtml(urlPid)}" placeholder="e.g., P12345" />
+        <button id="go">Start</button>
+      </div>
+    </div>
+  `);
+  document.getElementById("go").onclick = () => {
+    const pid = (document.getElementById("pid").value || "").trim();
+    if (!pid) { alert("Please enter a participant code."); return; }
+    state.pid = pid;
+    state.rng = makeRng(pid + "_seed");
+    state.order = counterbalance(pid);
+    state.shoe = shuffle(makeShoe(4), state.rng);
+    state.bankroll = START_BANKROLL;
+    state.block = 0;
+    state.round = 0;
+    state.logs = [];
+    state.trust = [];
+    screenTrust("Baseline trust (before any AI)", "");
+  };
+}
+
+function screenTrust(label, aiLabel){
+  render(`
+    <div class="card">
+      <h2>Trust Rating</h2>
+      <p>${escapeHtml(label)}</p>
+      <p class="muted">1 = very low, 7 = very high</p>
+      <div class="row">
+        <select id="trust">
+          ${[1,2,3,4,5,6,7].map(v=>`<option value="${v}" ${v===4?"selected":""}>${v}</option>`).join("")}
+        </select>
+        <button id="continue">Continue</button>
+      </div>
+    </div>
+  `);
+  document.getElementById("continue").onclick = () => {
+    const v = parseInt(document.getElementById("trust").value, 10);
+    state.trust.push({label, ai: aiLabel, trust_1_7: v});
+    if (label.startsWith("Baseline")) {
+      screenRound();
+    } else {
+      if (state.block >= 2) screenEnd();
+      else screenRound();
+    }
+  };
+}
+
+function draw(){
+  if (state.shoe.length < 60) state.shoe = shuffle(makeShoe(4), state.rng);
+  return state.shoe.pop();
+}
+
+function screenRound(){
+  const aiType = state.order[state.block];
+  state.round += 1;
+
+  if (state.round > ROUNDS_PER_BLOCK){
+    // end of block
+    state.block += 1;
+    state.round = 0;
+    if (state.block >= 2){
+      screenTrust("After Block 2", state.order[1]);
+      state.block = 2; // mark end
+      return;
+    } else {
+      screenTrust("After Block 1", state.order[0]);
+      return;
+    }
+  }
+
+  const bankrollStart = state.bankroll;
+
+  const playerStart = [draw(), draw()];
+  const dealerStart = [draw(), draw()];
+  const dealerUp = dealerStart[0].r;
+
+  const suggestedBet = aiBet(state.bankroll, aiType, state.rng);
+  const base = basicStrategy(playerStart, dealerUp);
+  const suggestedAction = (aiType==="RISKY") ? riskyDeviation(playerStart, dealerUp, base, state.rng) : base;
+
+  render(`
+    <div class="card">
+      <h2>Blackjack</h2>
+      <p><strong>Block:</strong> ${state.block+1}/2 (${aiType}) &nbsp; | &nbsp;
+         <strong>Round:</strong> ${state.round}/${ROUNDS_PER_BLOCK}</p>
+      <p><strong>Bankroll:</strong> ${state.bankroll}</p>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <div style="flex:1">
+          <h3>Dealer</h3>
+          <p>${cardStr(dealerStart[0])} <span class="muted">[hidden]</span></p>
+        </div>
+        <div style="flex:1">
+          <h3>You</h3>
+          <p>${handStr(playerStart)}</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>AI Advisor</h3>
+      <p><strong>Suggested bet:</strong> ${suggestedBet}</p>
+      <p><strong>Suggested action:</strong> ${suggestedAction}</p>
+    </div>
+
+    <div class="card">
+      <h3>Your bet</h3>
+      <div class="row">
+        <input id="bet" type="number" min="1" max="${state.bankroll}" value="${Math.min(5, state.bankroll)}"/>
+        <span class="muted">Enter 1–${state.bankroll}</span>
+      </div>
+      <h3 style="margin-top:12px;">Your action</h3>
+      <div class="row">
+        <button id="hit">Hit</button>
+        <button id="stand">Stand</button>
+        <button id="double">Double</button>
+      </div>
+      <p class="muted">This simplified version applies your chosen action once per round.</p>
+    </div>
+  `);
+
+  const finishRound = (participantAction) => {
+    let bet = parseInt(document.getElementById("bet").value, 10);
+    if (!Number.isFinite(bet)) bet = 1;
+    bet = Math.max(1, Math.min(bet, state.bankroll));
+
+    let player = playerStart.slice();
+    let dealer = dealerStart.slice();
+
+    let finalBet = bet;
+    if (participantAction === "Double" && player.length===2 && state.bankroll >= bet*2){
+      finalBet = bet*2;
+      player.push(draw());
+    } else if (participantAction === "Hit"){
+      player.push(draw());
+    }
+
+    dealer = dealerPlay(dealer, state.shoe);
+    const res = resolveOutcome(player, dealer, finalBet);
+    state.bankroll += res.delta;
+
+    state.logs.push({
+      pid: state.pid,
+      block_order: state.order.join("-"),
+      block_ai: aiType,
+      block_number: state.block+1,
+      round_in_block: state.round,
+      bankroll_start: bankrollStart,
+      bankroll_end: state.bankroll,
+      ai_bet: suggestedBet,
+      participant_bet: finalBet,
+      bet_followed_ai: (finalBet === suggestedBet) ? 1 : 0,
+      ai_action: suggestedAction,
+      participant_action: participantAction,
+      action_followed_ai: (participantAction === suggestedAction) ? 1 : 0,
+      player_start_hand: handStr(playerStart),
+      player_final_hand: handStr(player),
+      dealer_upcard: cardStr(dealerStart[0]),
+      dealer_final_hand: handStr(dealer),
+      player_total: handTotal(player),
+      dealer_total: handTotal(dealer),
+      outcome: res.outcome,
+      delta: res.delta,
+      t: new Date().toISOString()
+    });
+
+    // next
+    screenRound();
+  };
+
+  document.getElementById("hit").onclick = ()=>finishRound("Hit");
+  document.getElementById("stand").onclick = ()=>finishRound("Stand");
+  document.getElementById("double").onclick = ()=>finishRound("Double");
+}
+
+function screenEnd(){
+  const code = completionCodeFrom(state.pid);
+  const payloadObj = {
+    version: "blackjack_ai_v1",
+    pid: state.pid,
+    completion_code: code,
+    order: state.order,
+    trust: state.trust,
+    trials: state.logs
+  };
+  const payloadJson = JSON.stringify(payloadObj);
+  const payloadB64 = b64encode(payloadJson);
+
+  render(`
+    <div class="card">
+      <h2>Finished</h2>
+      <p><strong>Completion code:</strong> <code>${code}</code></p>
+      <p class="muted">Now return to Experimentum and paste the DATA PACKAGE below into the textbox.</p>
+    </div>
+
+    <div class="card">
+      <h3>DATA PACKAGE (copy/paste)</h3>
+      <textarea id="pkg" readonly>${payloadB64}</textarea>
+      <div class="row">
+        <button id="copy">Copy data package</button>
+      </div>
+      <p class="muted">If copying fails, select all text in the box and copy manually.</p>
+    </div>
+  `);
+
+  document.getElementById("copy").onclick = async () => {
+    const txt = document.getElementById("pkg").value;
+    try {
+      await navigator.clipboard.writeText(txt);
+      alert("Copied. Now paste into Experimentum.");
+    } catch {
+      alert("Copy failed. Please copy manually (Ctrl/Cmd+C).");
+    }
+  };
+}
+
+/* Start */
+screenStart();
+</script>
+</body>
+</html>
