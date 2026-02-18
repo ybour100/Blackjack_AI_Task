@@ -4,7 +4,12 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Blackjack AI Task</title>
+
+  <!-- LZString Compression -->
+  <script src="https://cdn.jsdelivr.net/npm/lz-string@1.5.0/libs/lz-string.min.js"></script>
+
   <style>
+
     :root{
       --border:#e5e5e5;
       --muted:#5a5a5a;
@@ -570,7 +575,8 @@ function screenEnd(){
     trust: state.trust,
     trials: state.logs
   };
-  const payloadB64 = b64encode(JSON.stringify(payloadObj));
+const jsonString = JSON.stringify(payloadObj);
+const payloadB64 = LZString.compressToBase64(jsonString);
 
   render(`
     <div class="card" style="background:#fff;">
