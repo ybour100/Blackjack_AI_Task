@@ -576,7 +576,14 @@ function screenEnd(){
     trials: state.logs
   };
 const jsonString = JSON.stringify(payloadObj);
-const payloadB64 = LZString.compressToBase64(jsonString);
+const payloadB64_raw = b64encode(jsonString);
+const payloadB64_zip = LZString.compressToBase64(jsonString);
+
+console.log("RAW b64 length:", payloadB64_raw.length);
+console.log("ZIP b64 length:", payloadB64_zip.length);
+
+const payloadB64 = payloadB64_zip;
+
 
   render(`
     <div class="card" style="background:#fff;">
