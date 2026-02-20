@@ -251,7 +251,7 @@ const ROUNDS_PER_BLOCK = 20;
 
 // Baseline trust prompt (must still start with "Baseline" for routing)
 const BASELINE_TRUST_PROMPT =
-  "Baseline: Before you see any advice in this task, how much would you trust an AI to guide your decisions in a game like this?";
+  "Before you see any advice in this task, how much would you trust an AI to guide your decisions in a game like this?";
 
 let state = {
   pid: null,
@@ -794,7 +794,7 @@ function screenActionChoice(){
 function screenEnd(){
   const code = completionCodeFrom(state.pid);
   const payloadObj = {
-    version: "blackjack_ai_v3_practice_blockreset_feedbackscreen_baselinetrust_aiwording",
+    version: "blackjack_ai_v3",
     pid: state.pid,
     completion_code: code,
     order: state.order,
